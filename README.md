@@ -2,6 +2,10 @@
 
 MCP server that proxies requests to multiple WordPress sites running the [MCP Expose Abilities](https://github.com/bjornfix/mcp-expose-abilities) plugin.
 
+## About
+
+Learn more about MCP Expose Abilities: https://devenia.com/plugins/mcp-expose-abilities/
+
 ## Requirements
 
 - Node.js 18+
