@@ -1,6 +1,6 @@
 # WordPress MCP Proxy
 
-MCP server that proxies requests to multiple WordPress sites running the [MCP Expose Abilities](https://github.com/Jeremypress/mcp-expose-abilities) plugin.
+MCP server that proxies requests to multiple WordPress sites running the [MCP Expose Abilities](https://github.com/bjornfix/mcp-expose-abilities) plugin.
 
 ## Requirements
 
