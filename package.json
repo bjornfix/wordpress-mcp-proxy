@@ -1,0 +1,13 @@
+{
+  "name": "wordpress-mcp-proxy",
+  "version": "1.0.0",
+  "description": "MCP proxy server for multiple WordPress sites",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

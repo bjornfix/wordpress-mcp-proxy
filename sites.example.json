@@ -1,0 +1,10 @@
+{
+  "my-site": {
+    "url": "https://example.com/wp-json/mcp/mcp-adapter-default-server",
+    "auth": "Basic base64_encoded_username:application_password"
+  },
+  "another-site": {
+    "url": "https://another.com/wp-json/mcp/mcp-adapter-default-server",
+    "auth": "Basic base64_encoded_credentials"
+  }
+}
