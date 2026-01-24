@@ -18,7 +18,7 @@ Learn more about MCP Expose Abilities: https://devenia.com/plugins/mcp-expose-ab
 2. Copy `sites.example.json` to `sites.json`
 3. Configure your sites with their MCP endpoints and Basic auth credentials
 4. Install dependencies: `npm install`
-5. Run: `node index.js`
+5. Run: `node index.js` (stdio default) or enable HTTP mode (see below)
 
 ## Configuration
 
@@ -38,7 +38,68 @@ To generate the auth value:
 echo -n "username:application_password" | base64
 ```
 
-## Claude Code Integration
+## Transports
+
+The proxy supports two transports:
+
+- `stdio` (default): local process or SSH-based connection
+- `http`: streamable HTTP server for remote clients
+
+### HTTP Mode
+
+Run the proxy as an HTTP server:
+
+```bash
+MCP_PROXY_TRANSPORT=http \
+MCP_PROXY_HOST=0.0.0.0 \
+MCP_PROXY_PORT=8787 \
+MCP_PROXY_TOKEN="replace-with-strong-token" \
+node index.js
+```
+
+Optional environment variables:
+
+- `MCP_PROXY_ALLOWED_HOSTS` (comma-separated list of allowed hostnames)
+- `MCP_PROXY_LOG=1` to emit startup logs
+
+## Client Configuration (HTTP recommended)
+
+### Claude Code
+
+`~/.config/claude-code/mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "wordpress-proxy": {
+      "type": "http",
+      "url": "http://YOUR_HOST:8787/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+### Codex
+
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.wordpress-proxy]
+type = "http"
+url = "http://YOUR_HOST:8787/mcp"
+headers = { Authorization = "Bearer YOUR_TOKEN" }
+```
+
+### cc-switch (single source of truth)
+
+Add `wordpress-proxy` as an HTTP MCP server in cc-switch and enable it for both
+Claude and Codex. Then remove per-app overrides so cc-switch remains the source
+of truth.
+
+## Stdio Integration (optional)
 
 Add to your global MCP config:
 
