@@ -4,10 +4,14 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import express from "express";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import {
+  hostHeaderValidation,
+  localhostHostValidation,
+} from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -88,31 +92,51 @@ async function wpRequest(siteName, body) {
     body: JSON.stringify(body),
   });
 
+  const isSessionError = (message) =>
+    typeof message === "string" &&
+    (message.includes("expired session") || message.includes("Invalid session"));
+
+  const retryWithFreshSession = async () => {
+    delete sessions[siteName];
+    const newSessionId = await getSession(siteName);
+    const retryResponse = await fetch(site.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": site.auth,
+        "Mcp-Session-Id": newSessionId,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!retryResponse.ok) {
+      const retryText = await retryResponse.text();
+      throw new Error(`WordPress API error (${retryResponse.status}): ${retryText}`);
+    }
+    const retryJson = await retryResponse.json();
+    if (retryJson?.error?.message) {
+      throw new Error(`WordPress API error (${retryResponse.status}): ${JSON.stringify(retryJson)}`);
+    }
+    return retryJson;
+  };
+
   if (!response.ok) {
     const text = await response.text();
     // If session expired, clear it and retry once
-    if (text.includes("expired session") || text.includes("Invalid session")) {
-      delete sessions[siteName];
-      const newSessionId = await getSession(siteName);
-      const retryResponse = await fetch(site.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": site.auth,
-          "Mcp-Session-Id": newSessionId,
-        },
-        body: JSON.stringify(body),
-      });
-      if (!retryResponse.ok) {
-        const retryText = await retryResponse.text();
-        throw new Error(`WordPress API error (${retryResponse.status}): ${retryText}`);
-      }
-      return await retryResponse.json();
+    if (isSessionError(text)) {
+      return await retryWithFreshSession();
     }
     throw new Error(`WordPress API error (${response.status}): ${text}`);
   }
 
-  return await response.json();
+  const json = await response.json();
+  if (json?.error?.message) {
+    if (isSessionError(json.error.message)) {
+      return await retryWithFreshSession();
+    }
+    throw new Error(`WordPress API error (${response.status}): ${JSON.stringify(json)}`);
+  }
+
+  return json;
 }
 
 function createServer() {
@@ -344,16 +368,29 @@ async function startHttp() {
   const host = process.env.MCP_PROXY_HOST || "127.0.0.1";
   const port = process.env.MCP_PROXY_PORT ? parseInt(process.env.MCP_PROXY_PORT, 10) : 8787;
   const token = process.env.MCP_PROXY_TOKEN || "";
+  const jsonLimit = process.env.MCP_PROXY_JSON_LIMIT || "96mb";
   const allowedHosts = (process.env.MCP_PROXY_ALLOWED_HOSTS || "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
 
-  const app = createMcpExpressApp({
-    host,
-    allowedHosts: allowedHosts.length ? allowedHosts : undefined,
-  });
+  const app = express();
   app.disable("x-powered-by");
+
+  if (allowedHosts.length) {
+    app.use(hostHeaderValidation(allowedHosts));
+  } else {
+    const localhostHosts = ["127.0.0.1", "localhost", "::1"];
+    if (localhostHosts.includes(host)) {
+      app.use(localhostHostValidation());
+    } else if (host === "0.0.0.0" || host === "::") {
+      console.warn(
+        `Warning: Server is binding to ${host} without DNS rebinding protection. ` +
+          "Consider using the allowedHosts option to restrict allowed hosts, " +
+          "or use authentication to protect your server."
+      );
+    }
+  }
 
   if (token) {
     app.use("/mcp", (req, res, next) => {
@@ -378,6 +415,44 @@ async function startHttp() {
     });
   }
 
+  app.use(
+    express.json({
+      limit: jsonLimit,
+    })
+  );
+
+  app.use("/mcp", (error, req, res, next) => {
+    if (!error) {
+      return next();
+    }
+
+    if (error.type === "entity.too.large") {
+      res.status(413).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: `Request body exceeds MCP proxy JSON limit (${jsonLimit}).`,
+        },
+        id: null,
+      });
+      return;
+    }
+
+    if (error instanceof SyntaxError) {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32700,
+          message: "Invalid JSON request body.",
+        },
+        id: null,
+      });
+      return;
+    }
+
+    next(error);
+  });
+
   const transports = new Map();
 
   app.all("/mcp", async (req, res) => {
@@ -386,6 +461,30 @@ async function startHttp() {
       : req.headers["mcp-session-id"];
 
     try {
+      const isInit = req.method === "POST" && isInitializeRequest(req.body);
+
+      if (isInit) {
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            transports.set(id, transport);
+          },
+        });
+
+        const server = createServer();
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid && transports.has(sid)) {
+            transports.delete(sid);
+          }
+          server.close();
+        };
+
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
       if (sessionId && transports.has(sessionId)) {
         const transport = transports.get(sessionId);
         await transport.handleRequest(req, res, req.body);
@@ -393,36 +492,23 @@ async function startHttp() {
       }
 
       if (sessionId && !transports.has(sessionId)) {
-        res.status(404).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32000,
-            message: "Unknown session",
-          },
-          id: null,
-        });
+        const transport = new StreamableHTTPServerTransport();
+
+        const server = createServer();
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid && transports.has(sid)) {
+            transports.delete(sid);
+          }
+          server.close();
+        };
+
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
         return;
       }
 
-      const isInit = req.method === "POST" && isInitializeRequest(req.body);
-      if (!isInit) {
-        res.status(400).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32000,
-            message: "Bad Request: No valid session ID provided",
-          },
-          id: null,
-        });
-        return;
-      }
-
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (id) => {
-          transports.set(id, transport);
-        },
-      });
+      const transport = new StreamableHTTPServerTransport();
 
       const server = createServer();
       transport.onclose = () => {

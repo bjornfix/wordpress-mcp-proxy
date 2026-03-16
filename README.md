@@ -60,7 +60,14 @@ node index.js
 Optional environment variables:
 
 - `MCP_PROXY_ALLOWED_HOSTS` (comma-separated list of allowed hostnames)
+- `MCP_PROXY_JSON_LIMIT` to raise or lower the accepted JSON request size in HTTP mode (default: `96mb`)
 - `MCP_PROXY_LOG=1` to emit startup logs
+
+Notes:
+
+- HTTP mode must accept large JSON bodies if you use `execute_ability` with `plugins/upload-base64`.
+- The SDK `createMcpExpressApp()` helper uses Express' default JSON parser limit (`100kb`), which is too small for many plugin ZIPs once base64-encoded.
+- This proxy now owns the JSON parser and defaults to `96mb` so plugin uploads are not truncated or rejected by the proxy's HTTP layer.
 
 ## Client Configuration (HTTP recommended)
 
